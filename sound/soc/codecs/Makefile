@@ -431,6 +431,11 @@ obj-$(CONFIG_SND_SOC_TPA6130A2)	+= snd-soc-tpa6130a2.o
 obj-y += sdm660_cdc/
 obj-y += msm_sdw/
 
+# TODO: remove me b/62058353
+subdir-ccflags-y += \
+	-Wno-enum-conversion
+
 ifdef CONFIG_VENDOR_SMARTISAN
 obj-y += snd-soc-max98927.o
 endif
+
