@@ -120,6 +120,9 @@
 #define QPNP_HAP_WAV_S_REP_MAX		8
 #define QPNP_HAP_WF_AMP_MASK		GENMASK(5, 1)
 #define QPNP_HAP_WF_OVD_BIT		BIT(6)
+#ifdef CONFIG_VENDOR_SMARTISAN
+#define QPNP_HAP_WF_SIGN_BIT		BIT(7)
+#endif
 #define QPNP_HAP_BRAKE_PAT_MASK		0x3
 #define QPNP_HAP_ILIM_MIN_MA		400
 #define QPNP_HAP_ILIM_MAX_MA		800
@@ -139,6 +142,12 @@
 #define QPNP_HAP_WAV_SQUARE		1
 #define QPNP_HAP_WAV_SAMP_LEN		8
 #define QPNP_HAP_WAV_SAMP_MAX		0x3E
+#ifdef CONFIG_VENDOR_SMARTISAN
+#define QPNP_HAP_WAV_SAMP_FWD_3000_MV	0x32
+#define QPNP_HAP_WAV_SAMP_REV_3000_MV	0xB2
+#define QPNP_HAP_WAV_SAMP_FWD_MAX_MV	0x3E
+#define QPNP_HAP_WAV_SAMP_REV_MAX_MV	0xBE
+#endif
 #define QPNP_HAP_BRAKE_PAT_LEN		4
 #define QPNP_HAP_PLAY_EN_BIT		BIT(7)
 #define QPNP_HAP_EN_BIT			BIT(7)
@@ -355,6 +364,8 @@ struct qpnp_hap {
 	struct mutex			lock;
 	struct mutex			wf_lock;
 	spinlock_t			bus_lock;
+	spinlock_t			td_lock;
+	struct work_struct		td_work;
 	struct completion		completion;
 	enum qpnp_hap_mode		play_mode;
 	u32				misc_clk_trim_error_reg;
@@ -362,6 +373,9 @@ struct qpnp_hap {
 	u32				timeout_ms;
 	u32				time_required_to_generate_back_emf_us;
 	u32				vmax_mv;
+	u32				vtg_min;
+	u32				vtg_max;
+	u32				vtg_default;
 	u32				ilim_ma;
 	u32				sc_deb_cycles;
 	u32				int_pwm_freq_khz;
@@ -402,6 +416,7 @@ struct qpnp_hap {
 	bool				auto_mode;
 	bool				override_auto_mode_config;
 	bool				play_irq_en;
+	int				td_time_ms;
 };
 
 static struct qpnp_hap *ghap;
@@ -667,12 +682,20 @@ static irqreturn_t qpnp_hap_sc_irq(int irq, void *_hap)
 }
 
 /* configuration api for buffer mode */
+#ifdef CONFIG_VENDOR_SMARTISAN
+static int qpnp_hap_buffer_config(struct qpnp_hap *hap, u8 *wave_samp,
+				bool overdrive, bool direction)
+#else
 static int qpnp_hap_buffer_config(struct qpnp_hap *hap, u8 *wave_samp,
 				bool overdrive)
+#endif
 {
 	u8 buf[QPNP_HAP_WAV_SAMP_LEN], val;
 	u8 *ptr;
 	int rc, i;
+#ifdef CONFIG_VENDOR_SMARTISAN
+	int sign;
+#endif
 
 	/* Configure the WAVE_REPEAT register */
 	if (hap->wave_rep_cnt < QPNP_HAP_WAV_REP_MIN)
@@ -703,9 +726,19 @@ static int qpnp_hap_buffer_config(struct qpnp_hap *hap, u8 *wave_samp,
 
 	/* Configure WAVE_SAMPLE1 to WAVE_SAMPLE8 register */
 	for (i = 0; i < QPNP_HAP_WAV_SAMP_LEN; i++) {
+#ifdef CONFIG_VENDOR_SMARTISAN
+		if (direction)
+			sign = ptr[i] & QPNP_HAP_WF_SIGN_BIT;
+		else
+			sign = 0;
+#endif
 		buf[i] = ptr[i] & QPNP_HAP_WF_AMP_MASK;
 		if (buf[i])
+#ifdef CONFIG_VENDOR_SMARTISAN
+			buf[i] |= ((overdrive ? QPNP_HAP_WF_OVD_BIT : 0) | sign);
+#else
 			buf[i] |= (overdrive ? QPNP_HAP_WF_OVD_BIT : 0);
+#endif
 	}
 
 	rc = qpnp_hap_write_mult_reg(hap, QPNP_HAP_WAV_S_REG_BASE(hap->base),
@@ -886,12 +919,12 @@ static int qpnp_hap_vmax_config(struct qpnp_hap *hap, int vmax_mv,
 	if (hap->pmic_subtype != PM660_SUBTYPE)
 		overdrive = false;
 
-	if (vmax_mv < QPNP_HAP_VMAX_MIN_MV)
-		vmax_mv = QPNP_HAP_VMAX_MIN_MV;
-	else if (vmax_mv > QPNP_HAP_VMAX_MAX_MV)
-		vmax_mv = QPNP_HAP_VMAX_MAX_MV;
+	if (vmax_mv < hap->vtg_min)
+		vmax_mv = hap->vtg_min;
+	else if (vmax_mv > hap->vtg_max)
+		vmax_mv = hap->vtg_max;
 
-	val = (vmax_mv / QPNP_HAP_VMAX_MIN_MV) << QPNP_HAP_VMAX_SHIFT;
+	val = (vmax_mv / hap->vtg_min) << QPNP_HAP_VMAX_SHIFT;
 	if (overdrive)
 		val |= QPNP_HAP_VMAX_OVD_BIT;
 	rc = qpnp_hap_masked_write_reg(hap, QPNP_HAP_VMAX_REG(hap->base),
@@ -1400,7 +1433,11 @@ static ssize_t qpnp_hap_play_mode_store(struct device *dev,
 	if (temp == QPNP_HAP_BUFFER) {
 		rc = qpnp_hap_parse_buffer_dt(hap);
 		if (!rc)
+#ifdef CONFIG_VENDOR_SMARTISAN
+			rc = qpnp_hap_buffer_config(hap, NULL, false, false);
+#else
 			rc = qpnp_hap_buffer_config(hap, NULL, false);
+#endif
 	} else if (temp == QPNP_HAP_PWM && !hap->pwm_cfg_state) {
 		rc = qpnp_hap_parse_pwm_dt(hap);
 		if (!rc)
@@ -1788,6 +1825,36 @@ static ssize_t qpnp_hap_vmax_store(struct device *dev,
 	return count;
 }
 
+static ssize_t qpnp_hap_min_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", hap->vtg_min);
+}
+
+static ssize_t qpnp_hap_max_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", hap->vtg_max);
+}
+
+static ssize_t qpnp_hap_default_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", hap->vtg_default);
+}
+
 /* sysfs attributes */
 static struct device_attribute qpnp_hap_attrs[] = {
 	__ATTR(wf_s0, 0664, qpnp_hap_wf_s0_show, qpnp_hap_wf_s0_store),
@@ -1819,6 +1886,18 @@ static struct device_attribute qpnp_hap_attrs[] = {
 		qpnp_hap_override_auto_mode_show,
 		qpnp_hap_override_auto_mode_store),
 	__ATTR(vmax_mv, 0664, qpnp_hap_vmax_show, qpnp_hap_vmax_store),
+	__ATTR(vtg_level, (S_IRUGO | S_IWUSR | S_IWGRP),
+			qpnp_hap_vmax_show,
+			qpnp_hap_vmax_store),
+	__ATTR(vtg_min, (S_IRUGO | S_IWUSR | S_IWGRP),
+			qpnp_hap_min_show,
+			NULL),
+	__ATTR(vtg_max, (S_IRUGO | S_IWUSR | S_IWGRP),
+			qpnp_hap_max_show,
+			NULL),
+	__ATTR(vtg_default, (S_IRUGO | S_IWUSR | S_IWGRP),
+			qpnp_hap_default_show,
+			NULL),
 };
 
 static int calculate_lra_code(struct qpnp_hap *hap)
@@ -2116,16 +2195,37 @@ static int qpnp_hap_auto_mode_config(struct qpnp_hap *hap, int time_ms)
 	old_ares_mode = hap->ares_cfg.auto_res_mode;
 	old_play_mode = hap->play_mode;
 	pr_debug("auto_mode, time_ms: %d\n", time_ms);
+#ifdef CONFIG_VENDOR_SMARTISAN
+	/* disable short vibration */
+	if (time_ms < 1) {
+#else
 	if (time_ms <= 20) {
+#endif
+#ifdef CONFIG_VENDOR_SMARTISAN
+		pr_info("short pattern, time_ms: %d\n", time_ms);
+		/* forward 3 cycles */
+		wave_samp[0] = QPNP_HAP_WAV_SAMP_FWD_MAX_MV;
+		wave_samp[1] = QPNP_HAP_WAV_SAMP_FWD_MAX_MV;
+		wave_samp[2] = QPNP_HAP_WAV_SAMP_FWD_MAX_MV;
+
+		/*reverse 2 cycles */
+		wave_samp[3] = QPNP_HAP_WAV_SAMP_REV_MAX_MV;
+		wave_samp[4] = QPNP_HAP_WAV_SAMP_REV_MAX_MV;
+#else
 		wave_samp[0] = QPNP_HAP_WAV_SAMP_MAX;
 		wave_samp[1] = QPNP_HAP_WAV_SAMP_MAX;
 		if (time_ms > 15)
 			wave_samp[2] = QPNP_HAP_WAV_SAMP_MAX;
+#endif
 
 		/* short pattern */
 		rc = qpnp_hap_parse_buffer_dt(hap);
 		if (!rc)
+#ifdef CONFIG_VENDOR_SMARTISAN
+			rc = qpnp_hap_buffer_config(hap, wave_samp, true, true);
+#else
 			rc = qpnp_hap_buffer_config(hap, wave_samp, true);
+#endif
 		if (rc < 0) {
 			pr_err("Error in configuring buffer mode %d\n",
 				rc);
@@ -2161,7 +2261,11 @@ static int qpnp_hap_auto_mode_config(struct qpnp_hap *hap, int time_ms)
 		}
 
 		hap->play_mode = QPNP_HAP_BUFFER;
+#ifdef CONFIG_VENDOR_SMARTISAN
+		hap->wave_shape = QPNP_HAP_WAV_SINE;
+#else
 		hap->wave_shape = QPNP_HAP_WAV_SQUARE;
+#endif
 	} else {
 		/* long pattern */
 		ares_cfg.lra_high_z = QPNP_HAP_LRA_HIGH_Z_OPT1;
@@ -2226,14 +2330,20 @@ static int qpnp_hap_auto_mode_config(struct qpnp_hap *hap, int time_ms)
 	return 0;
 }
 
-/* enable interface from timed output class */
-static void qpnp_hap_td_enable(struct timed_output_dev *dev, int time_ms)
+static void qpnp_timed_enable_worker(struct work_struct *work)
 {
-	struct qpnp_hap *hap = container_of(dev, struct qpnp_hap,
-					 timed_dev);
-	bool state = !!time_ms;
+	struct qpnp_hap *hap = container_of(work, struct qpnp_hap,
+					 td_work);
+	bool state;
 	ktime_t rem;
 	int rc;
+	int time_ms;
+
+	spin_lock(&hap->td_lock);
+	time_ms = hap->td_time_ms;
+	spin_unlock(&hap->td_lock);
+
+	state = !!time_ms;
 
 	if (time_ms < 0)
 		return;
@@ -2285,6 +2395,19 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int time_ms)
 
 	mutex_unlock(&hap->lock);
 	schedule_work(&hap->work);
+}
+
+/* enable interface from timed output class */
+static void qpnp_hap_td_enable(struct timed_output_dev *dev, int time_ms)
+{
+	struct qpnp_hap *hap = container_of(dev, struct qpnp_hap,
+					 timed_dev);
+
+	spin_lock(&hap->td_lock);
+	hap->td_time_ms = time_ms;
+	spin_unlock(&hap->td_lock);
+
+	schedule_work(&hap->td_work);
 }
 
 /* play pwm bytes */
@@ -2585,7 +2708,11 @@ static int qpnp_hap_config(struct qpnp_hap *hap)
 		return rc;
 
 	if (hap->play_mode == QPNP_HAP_BUFFER)
+#ifdef CONFIG_VENDOR_SMARTISAN
+		rc = qpnp_hap_buffer_config(hap, NULL, false, false);
+#else
 		rc = qpnp_hap_buffer_config(hap, NULL, false);
+#endif
 	else if (hap->play_mode == QPNP_HAP_PWM)
 		rc = qpnp_hap_pwm_config(hap);
 	else if (hap->play_mode == QPNP_HAP_AUDIO)
@@ -2837,7 +2964,25 @@ static int qpnp_hap_parse_dt(struct qpnp_hap *hap)
 		return rc;
 	}
 
-	hap->vmax_mv = QPNP_HAP_VMAX_MAX_MV;
+	hap->vtg_min = QPNP_HAP_VMAX_MIN_MV;
+	rc = of_property_read_u32(pdev->dev.of_node, "qcom,vtg-min", &temp);
+	if (!rc) {
+		hap->vtg_min = temp;
+	} else if (rc != -EINVAL) {
+		pr_err("Unable to read vtg_min\n");
+		return rc;
+	}
+
+	hap->vtg_max = QPNP_HAP_VMAX_MAX_MV;
+	rc = of_property_read_u32(pdev->dev.of_node, "qcom,vtg-max", &temp);
+	if (!rc) {
+		hap->vtg_max = temp;
+	} else if (rc != -EINVAL) {
+		pr_err("Unable to read vtg_max\n");
+		return rc;
+	}
+
+	hap->vmax_mv = hap->vtg_max;
 	rc = of_property_read_u32(pdev->dev.of_node, "qcom,vmax-mv", &temp);
 	if (!rc) {
 		hap->vmax_mv = temp;
@@ -2845,6 +2990,14 @@ static int qpnp_hap_parse_dt(struct qpnp_hap *hap)
 		pr_err("Unable to read vmax\n");
 		return rc;
 	}
+
+	if (hap->vmax_mv < hap->vtg_min) {
+		hap->vmax_mv = hap->vtg_min;
+	} else if (hap->vmax_mv > hap->vtg_max) {
+		hap->vmax_mv = hap->vtg_max;
+	}
+
+	hap->vtg_default = hap->vmax_mv;
 
 	hap->ilim_ma = QPNP_HAP_ILIM_MIN_MV;
 	rc = of_property_read_u32(pdev->dev.of_node, "qcom,ilim-ma", &temp);
@@ -3015,17 +3168,25 @@ static int qpnp_haptic_probe(struct platform_device *pdev)
 	}
 
 	spin_lock_init(&hap->bus_lock);
+#ifdef CONFIG_VENDOR_SMARTISAN
+	mutex_init(&hap->lock);
+	mutex_init(&hap->wf_lock);
+#endif
 	rc = qpnp_hap_config(hap);
 	if (rc) {
 		pr_err("hap config failed\n");
 		return rc;
 	}
 
+#ifndef CONFIG_VENDOR_SMARTISAN
 	mutex_init(&hap->lock);
 	mutex_init(&hap->wf_lock);
+#endif
+	spin_lock_init(&hap->td_lock);
 	INIT_WORK(&hap->work, qpnp_hap_worker);
 	INIT_DELAYED_WORK(&hap->sc_work, qpnp_handle_sc_irq);
 	init_completion(&hap->completion);
+	INIT_WORK(&hap->td_work, qpnp_timed_enable_worker);
 
 	hrtimer_init(&hap->hap_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	hap->hap_timer.function = qpnp_hap_timer;
