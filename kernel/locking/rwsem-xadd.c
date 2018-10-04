@@ -543,6 +543,7 @@ struct rw_semaphore *rwsem_wake(struct rw_semaphore *sem)
 	 * The smp_rmb() here is to make sure that the spinner state is
 	 * consulted after sem->count is updated in up_write context.
 	 */
+
 	smp_rmb();
 
 	/*
