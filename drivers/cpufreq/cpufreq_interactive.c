@@ -2101,8 +2101,18 @@ static int __init cpufreq_interactive_init(void)
 
 	ret = cpufreq_register_governor(&cpufreq_gov_interactive);
 	if (ret) {
+#ifdef CONFIG_SCHED_HMP
+		{
+			struct cluster *clstr, *tmp;
+
+			for_each_cluster_safe(clstr, tmp) {
+				hmp_unregister_cluster(clstr);
+			}
+		}
+#else
 		kthread_stop(speedchange_task);
 		put_task_struct(speedchange_task);
+#endif
 	}
 	return ret;
 }
