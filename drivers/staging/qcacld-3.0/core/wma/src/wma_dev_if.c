@@ -532,6 +532,7 @@ static QDF_STATUS wma_self_peer_remove(tp_wma_handle wma_handle,
 				 vdev_id);
 			wma_remove_req(wma_handle, vdev_id,
 				WMA_DEL_P2P_SELF_STA_RSP_START);
+			qdf_mem_free(sta_self_wmi_rsp);
 			qdf_status = QDF_STATUS_E_FAILURE;
 			goto error;
 		}
@@ -702,17 +703,8 @@ QDF_STATUS wma_vdev_detach(tp_wma_handle wma_handle,
 	return status;
 
 send_fail_rsp_and_trigger_recovery:
-	if (!cds_is_driver_recovering()) {
-		if (cds_is_self_recovery_enabled()) {
-			WMA_LOGE("rcvd del_self_sta without del_bss, trigger recovery, vdev_id %d",
-				 vdev_id);
-			cds_trigger_recovery(CDS_REASON_UNSPECIFIED);
-		} else {
-			WMA_LOGE("rcvd del_self_sta without del_bss, BUG_ON(), vdev_id %d",
-				 vdev_id);
-			QDF_BUG(0);
-		}
-	}
+	WMA_LOGE("rcvd del_self_sta without del_bss; vdev_id:%d", vdev_id);
+	cds_trigger_recovery(CDS_REASON_UNSPECIFIED);
 
 send_fail_rsp:
 	if (generateRsp) {
@@ -770,7 +762,7 @@ static void wma_vdev_start_rsp(tp_wma_handle wma,
 			add_bss->status = QDF_STATUS_E_NOMEM;
 			goto send_fail_resp;
 		}
-		bcn->buf = qdf_nbuf_alloc(NULL, WMA_BCN_BUF_MAX_SIZE, 0,
+		bcn->buf = qdf_nbuf_alloc(NULL, SIR_MAX_BEACON_SIZE, 0,
 					  sizeof(uint32_t), 0);
 		if (!bcn->buf) {
 			WMA_LOGE("%s: No memory allocated for beacon buffer",
@@ -1000,7 +992,6 @@ int wma_vdev_start_resp_handler(void *handle, uint8_t *cmd_param_info,
 			if (resp_event->pdev_id == WMI_PDEV_ID_SOC) {
 				WMA_LOGE("%s: soc level id received for mac id",
 					__func__);
-				QDF_BUG(0);
 				return -EINVAL;
 			}
 			wma->interfaces[resp_event->vdev_id].mac_id =
@@ -1102,11 +1093,13 @@ int wma_vdev_start_resp_handler(void *handle, uint8_t *cmd_param_info,
 			wma->interfaces[resp_event->vdev_id].is_channel_switch =
 				false;
 		}
-		if (((resp_event->resp_type == WMI_VDEV_RESTART_RESP_EVENT) &&
-			((iface->type == WMI_VDEV_TYPE_STA) ||
-				(iface->type == WMI_VDEV_TYPE_MONITOR))) ||
-			((resp_event->resp_type == WMI_VDEV_START_RESP_EVENT) &&
-			 (iface->type == WMI_VDEV_TYPE_MONITOR))) {
+
+		if ((QDF_IS_STATUS_SUCCESS(resp_event->status) &&
+		     (resp_event->resp_type == WMI_VDEV_RESTART_RESP_EVENT) &&
+		     ((iface->type == WMI_VDEV_TYPE_STA) ||
+		      (iface->type == WMI_VDEV_TYPE_MONITOR))) ||
+		    ((resp_event->resp_type == WMI_VDEV_START_RESP_EVENT) &&
+		     (iface->type == WMI_VDEV_TYPE_MONITOR))) {
 			/* for CSA case firmware expects phymode before ch_wd */
 			err = wma_set_peer_param(wma, iface->bssid,
 					WMI_PEER_PHYMODE, iface->chanmode,
@@ -2235,6 +2228,7 @@ ol_txrx_vdev_handle wma_vdev_attach(tp_wma_handle wma_handle,
 			status = QDF_STATUS_E_FAILURE;
 			wmi_unified_vdev_delete_send(wma_handle->wmi_handle,
 						     self_sta_req->session_id);
+			goto end;
 		}
 	}
 
@@ -2546,16 +2540,8 @@ QDF_STATUS wma_vdev_start(tp_wma_handle wma,
 					    WMA_TARGET_REQ_TYPE_VDEV_STOP,
 					    false);
 		if (!req_msg || req_msg->msg_type != WMA_DELETE_BSS_REQ) {
-			if (!cds_is_driver_recovering()) {
-				if (cds_is_self_recovery_enabled()) {
-					WMA_LOGE("BSS is in started state before vdev start, trigger recovery");
-					cds_trigger_recovery(
-						CDS_REASON_UNSPECIFIED);
-				} else {
-					WMA_LOGE("BSS is in started state before vdev start, BUG_ON()");
-					QDF_BUG(0);
-				}
-			}
+			WMA_LOGE("BSS is in started state before vdev start");
+			cds_trigger_recovery(CDS_REASON_UNSPECIFIED);
 		}
 	}
 
@@ -3009,15 +2995,9 @@ int wma_peer_delete_handler(void *handle, uint8_t *cmd_param_info,
 static void wma_trigger_recovery_assert_on_fw_timeout(
 			uint16_t wma_msg)
 {
-	if (cds_is_self_recovery_enabled()) {
-		WMA_LOGE("%s timed out, triggering recovery",
-			 mac_trace_get_wma_msg_string(wma_msg));
-		cds_trigger_recovery(CDS_REASON_UNSPECIFIED);
-	} else {
-		WMA_LOGE("%s timed out, BUG_ON()",
-			 mac_trace_get_wma_msg_string(wma_msg));
-		QDF_BUG(0);
-	}
+	WMA_LOGE("%s timed out, triggering recovery",
+		 mac_trace_get_wma_msg_string(wma_msg));
+	cds_trigger_recovery(CDS_REASON_UNSPECIFIED);
 }
 
 static inline bool wma_crash_on_fw_timeout(bool crash_enabled)
@@ -3189,6 +3169,11 @@ struct wma_target_req *wma_fill_hold_req(tp_wma_handle wma,
 	struct wma_target_req *req;
 	QDF_STATUS status;
 
+	if (!cds_is_target_ready()) {
+		WMA_LOGE("target not ready, drop the request");
+		return NULL;
+	}
+
 	req = qdf_mem_malloc(sizeof(*req));
 	if (!req) {
 		WMA_LOGE(FL("Failed to allocate memory for msg %d vdev %d"),
@@ -3354,7 +3339,8 @@ void wma_vdev_resp_timer(void *data)
 		if (wma_crash_on_fw_timeout(wma->fw_timeout_crash) == true) {
 			wma_trigger_recovery_assert_on_fw_timeout(
 				WMA_DELETE_BSS_REQ);
-			return;
+			wma_cleanup_target_req_param(tgt_req);
+			goto free_tgt_req;
 		}
 
 		if (wma_is_vdev_in_ibss_mode(wma, tgt_req->vdev_id))
@@ -3454,6 +3440,19 @@ void wma_vdev_resp_timer(void *data)
 			wma_trigger_recovery_assert_on_fw_timeout(
 				WMA_ADD_BSS_REQ);
 		} else {
+			/* Send vdev stop to the FW */
+			if (wma_send_vdev_stop_to_fw(wma, tgt_req->vdev_id))
+				WMA_LOGE("%s: Failed to send vdev stop to fw",
+					 __func__);
+
+			peer = ol_txrx_find_peer_by_addr(pdev, params->bssId,
+							 &peer_id);
+			if (peer)
+				wma_remove_peer(wma, params->bssId,
+						tgt_req->vdev_id, peer, false);
+			else
+				WMA_LOGE("%s: Failed to find peer", __func__);
+
 			wma_send_msg_high_priority(wma,
 				WMA_ADD_BSS_RSP, (void *)params, 0);
 			QDF_ASSERT(0);
@@ -3514,6 +3513,11 @@ struct wma_target_req *wma_fill_vdev_req(tp_wma_handle wma,
 {
 	struct wma_target_req *req;
 	QDF_STATUS status;
+
+	if (!cds_is_target_ready()) {
+		WMA_LOGE("target not ready, drop the request");
+		return NULL;
+	}
 
 	req = qdf_mem_malloc(sizeof(*req));
 	if (!req) {
@@ -5371,7 +5375,6 @@ fail_del_bss_ho_fail:
 		WMA_DELETE_BSS_HO_FAIL_RSP, (void *)params, 0);
 }
 
-#ifdef WLAN_FEATURE_HOST_ROAM
 /**
  * wma_wait_tx_complete() - Wait till tx packets are drained
  * @wma: wma handle
@@ -5408,12 +5411,7 @@ static void wma_wait_tx_complete(tp_wma_handle wma,
 		max_wait_iterations--;
 	}
 }
-#else
-static void wma_wait_tx_complete(tp_wma_handle wma)
-{
 
-}
-#endif
 /**
  * wma_delete_bss() - process delete bss request from upper layer
  * @wma: wma handle

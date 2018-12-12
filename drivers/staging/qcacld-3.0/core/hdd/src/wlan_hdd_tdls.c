@@ -700,6 +700,7 @@ void hdd_tdls_context_init(hdd_context_t *hdd_ctx, bool ssr)
 	hdd_ctx->set_state_info.vdev_id = 0;
 	hdd_ctx->tdls_nss_teardown_complete = false;
 	hdd_ctx->tdls_nss_transition_mode = TDLS_NSS_TRANSITION_UNKNOWN;
+	hdd_ctx->enable_tdls_in_fw = true;
 
 	if (false == hdd_ctx->config->fEnableTDLSImplicitTrigger) {
 		hdd_ctx->tdls_mode = eTDLS_SUPPORT_EXPLICIT_TRIGGER_ONLY;
@@ -6589,4 +6590,12 @@ revert_tdls_mode:
 		wlan_hdd_tdls_set_mode(hdd_ctx, tdls_mode, false,
 				       HDD_SET_TDLS_MODE_SOURCE_POLICY_MGR);
 	}
+}
+
+void hdd_tdls_init_completion(hdd_adapter_t *adapter)
+{
+	init_completion(&adapter->tdls_add_station_comp);
+	init_completion(&adapter->tdls_del_station_comp);
+	init_completion(&adapter->tdls_mgmt_comp);
+	init_completion(&adapter->tdls_link_establish_req_comp);
 }

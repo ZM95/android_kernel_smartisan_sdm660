@@ -312,8 +312,6 @@ char *lim_msg_str(uint32_t msgType)
 		return "eWNI_SME_STOP_BSS_REQ";
 	case eWNI_SME_STOP_BSS_RSP:
 		return "eWNI_SME_STOP_BSS_RSP";
-	case eWNI_SME_NEIGHBOR_BSS_IND:
-		return "eWNI_SME_NEIGHBOR_BSS_IND";
 	case eWNI_SME_DEAUTH_CNF:
 		return "eWNI_SME_DEAUTH_CNF";
 	case eWNI_SME_ADDTS_REQ:
@@ -601,8 +599,16 @@ void lim_deactivate_timers(tpAniSirGlobal mac_ctx)
 	/* Deactivate remain on channel timer */
 	tx_timer_deactivate(&lim_timer->gLimRemainOnChannelTimer);
 
+	if (tx_timer_running(&lim_timer->gLimDisassocAckTimer)) {
+		pe_err("Disassoc timer running call the timeout API");
+		lim_timer_handler(mac_ctx, SIR_LIM_DISASSOC_ACK_TIMEOUT);
+	}
 	tx_timer_deactivate(&lim_timer->gLimDisassocAckTimer);
 
+	if (tx_timer_running(&lim_timer->gLimDeauthAckTimer)) {
+		pe_err("Deauth timer running call the timeout API");
+		lim_timer_handler(mac_ctx, SIR_LIM_DEAUTH_ACK_TIMEOUT);
+	}
 	tx_timer_deactivate(&lim_timer->gLimDeauthAckTimer);
 
 	tx_timer_deactivate(&lim_timer->
@@ -5924,12 +5930,7 @@ bool lim_set_nss_change(tpAniSirGlobal pMac, tpPESession psessionEntry,
 
 	if (!rxNss) {
 		pe_err("Invalid rxNss value: %u", rxNss);
-		if (!cds_is_driver_recovering()) {
-			if (cds_is_self_recovery_enabled())
-				cds_trigger_recovery(CDS_REASON_UNSPECIFIED);
-			else
-				QDF_BUG(0);
-		}
+		cds_trigger_recovery(CDS_REASON_UNSPECIFIED);
 	}
 
 	tempParam.rxNss = rxNss;

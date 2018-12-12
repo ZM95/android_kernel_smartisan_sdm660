@@ -175,6 +175,7 @@ static const struct reg_dmn_pair g_reg_dmn_pairs[] = {
 	{ETSI8_WORLD, ETSI8, WORLD, CTRY_DEFAULT},
 	{ETSI9_WORLD, ETSI9, WORLD, CTRY_DEFAULT},
 	{ETSI13_WORLD, ETSI13, WORLD, CTRY_DEFAULT},
+	{ETSI14_WORLD, ETSI14, WORLD, CTRY_DEFAULT},
 	{ETSI15_WORLD, ETSI15, WORLD, CTRY_DEFAULT},
 	{APL4_WORLD, APL4, WORLD, CTRY_DEFAULT},
 	{APL2_WORLD, APL2, WORLD, CTRY_DEFAULT},
@@ -308,7 +309,7 @@ static const struct country_code_to_reg_dmn g_all_countries[] = {
 	{CTRY_MARSHALL_ISLANDS, FCC3_FCCA, "MH", "MARSHALL ISLANDS"},
 	{CTRY_MARTINIQUE, ETSI13_WORLD, "MQ", "MARTINIQUE"},
 	{CTRY_MAURITANIA, ETSI1_WORLD, "MR", "MAURITANA"},
-	{CTRY_MAURITIUS, FCC3_WORLD, "MU", "MAURITIUS"},
+	{CTRY_MAURITIUS, ETSI13_WORLD, "MU", "MAURITIUS"},
 	{CTRY_MAYOTTE, ETSI1_WORLD, "YT", "MAYOTTE"},
 	{CTRY_MEXICO, FCC3_ETSIC, "MX", "MEXICO"},
 	{CTRY_MICRONESIA, FCC3_FCCA, "FM", "MICRONESIA"},
@@ -317,6 +318,7 @@ static const struct country_code_to_reg_dmn g_all_countries[] = {
 	{CTRY_MONGOLIA, FCC3_WORLD, "MN", "MONGOLIA"},
 	{CTRY_MONTENEGRO, ETSI13_WORLD, "ME", "MONTENEGRO"},
 	{CTRY_MOROCCO, ETSI3_WORLD, "MA", "MOROCCO"},
+	{CTRY_MYANMAR, APL1_WORLD, "MM", "MYANMAR"},
 	{CTRY_NAMIBIA, APL20_WORLD, "NA", "NAMIBIA"},
 	{CTRY_NEPAL, APL23_WORLD, "NP", "NEPAL"},
 	{CTRY_NETHERLANDS, ETSI13_WORLD, "NL", "NETHERLANDS"},
@@ -337,7 +339,7 @@ static const struct country_code_to_reg_dmn g_all_countries[] = {
 	{CTRY_POLAND, ETSI13_WORLD, "PL", "POLAND"},
 	{CTRY_PORTUGAL, ETSI13_WORLD, "PT", "PORTUGAL"},
 	{CTRY_PUERTO_RICO, FCC3_FCCA, "PR", "PUERTO RICO"},
-	{CTRY_QATAR, APL1_WORLD, "QA", "QATAR"},
+	{CTRY_QATAR, ETSI14_WORLD, "QA", "QATAR"},
 	{CTRY_REUNION, ETSI1_WORLD, "RE", "REUNION"},
 	{CTRY_ROMANIA, ETSI13_WORLD, "RO", "ROMANIA"},
 	{CTRY_RUSSIA, ETSI8_WORLD, "RU", "RUSSIA"},
@@ -913,6 +915,47 @@ uint16_t cds_reg_dmn_get_opclass_from_channel(uint8_t *country, uint8_t channel,
 	}
 
 	return 0;
+}
+
+/**
+ * cds_reg_dmn_get_channel_from_opclass() - get channel from operating class
+ * @country: the country code
+ * @op_class: operating class
+ *
+ * Return: none
+ */
+void cds_reg_dmn_get_channel_from_opclass(uint8_t *country, uint8_t op_class)
+{
+	const struct reg_dmn_op_class_map_t *class = NULL;
+	uint16_t i = 0;
+
+	if (!qdf_mem_cmp(country, "US", 2)) {
+		class = us_op_class;
+	} else if (!qdf_mem_cmp(country, "EU", 2)) {
+		class = euro_op_class;
+	} else if (!qdf_mem_cmp(country, "JP", 2)) {
+		class = japan_op_class;
+	} else {
+		class = global_op_class;
+	}
+
+	while (class->op_class) {
+		if (class->op_class == op_class) {
+			for (i = 0;
+			     (i < MAX_CHANNELS_PER_OPERATING_CLASS &&
+			      class->channels[i]); i++) {
+				QDF_TRACE(QDF_MODULE_ID_QDF,
+					  QDF_TRACE_LEVEL_ERROR,
+					  "Valid channel(%d) in requested RC(%d)",
+					  class->channels[i], op_class);
+			}
+			break;
+		}
+		class++;
+	}
+	if (!class->op_class)
+		QDF_TRACE(QDF_MODULE_ID_QDF, QDF_TRACE_LEVEL_ERROR,
+			  "Invalid requested RC (%d)", op_class);
 }
 
 /**

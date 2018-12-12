@@ -1703,6 +1703,7 @@ int wlan_hdd_set_powersave(hdd_adapter_t *adapter,
 {
 	tHalHandle hal;
 	hdd_context_t *hdd_ctx;
+	QDF_STATUS status = QDF_STATUS_SUCCESS;
 
 	if (NULL == adapter) {
 		hdd_err("Adapter NULL");
@@ -1734,9 +1735,11 @@ int wlan_hdd_set_powersave(hdd_adapter_t *adapter,
 		if (QDF_STA_MODE == adapter->device_mode ||
 		    QDF_P2P_CLIENT_MODE == adapter->device_mode) {
 			hdd_debug("Disabling Auto Power save timer");
-			sme_ps_disable_auto_ps_timer(
+			status = sme_ps_disable_auto_ps_timer(
 				WLAN_HDD_GET_HAL_CTX(adapter),
 				adapter->sessionId);
+			if (status != QDF_STATUS_SUCCESS)
+				goto end;
 		}
 
 		if (hdd_ctx->config && hdd_ctx->config->is_ps_enabled) {
@@ -1746,13 +1749,19 @@ int wlan_hdd_set_powersave(hdd_adapter_t *adapter,
 			 * Enter Power Save command received from GUI
 			 * this means DHCP is completed
 			 */
-			if (timeout)
-				sme_ps_enable_auto_ps_timer(hal,
+			if (timeout) {
+				status = sme_ps_enable_auto_ps_timer(hal,
 							    adapter->sessionId,
 							    timeout);
-			else
-				sme_ps_enable_disable(hal, adapter->sessionId,
-						      SME_PS_ENABLE);
+				if (status != QDF_STATUS_SUCCESS)
+					goto end;
+			} else {
+				status = sme_ps_enable_disable(hal,
+						adapter->sessionId,
+						SME_PS_ENABLE);
+				if (status != QDF_STATUS_SUCCESS)
+					goto end;
+			}
 		} else {
 			hdd_debug("Power Save is not enabled in the cfg");
 		}
@@ -1763,12 +1772,17 @@ int wlan_hdd_set_powersave(hdd_adapter_t *adapter,
 		 * Enter Full power command received from GUI
 		 * this means we are disconnected
 		 */
-		sme_ps_disable_auto_ps_timer(WLAN_HDD_GET_HAL_CTX(adapter),
-			adapter->sessionId);
-		sme_ps_enable_disable(hal, adapter->sessionId, SME_PS_DISABLE);
+		status = sme_ps_disable_auto_ps_timer(
+					WLAN_HDD_GET_HAL_CTX(adapter),
+					adapter->sessionId);
+		if (status != QDF_STATUS_SUCCESS)
+			goto end;
+		status = sme_ps_enable_disable(hal, adapter->sessionId,
+					       SME_PS_DISABLE);
 	}
 
-	return 0;
+end:
+	return qdf_status_to_os_return(status);
 }
 
 static void wlan_hdd_print_suspend_fail_stats(hdd_context_t *hdd_ctx)
@@ -1792,13 +1806,13 @@ void wlan_hdd_inc_suspend_stats(hdd_context_t *hdd_ctx,
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 12, 0)
-static inline void
+void
 hdd_sched_scan_results(struct wiphy *wiphy, uint64_t reqid)
 {
 	cfg80211_sched_scan_results(wiphy);
 }
 #else
-static inline void
+void
 hdd_sched_scan_results(struct wiphy *wiphy, uint64_t reqid)
 {
 	cfg80211_sched_scan_results(wiphy, reqid);
@@ -2079,6 +2093,9 @@ next_adapter:
 	status = hdd_get_front_adapter(pHddCtx, &pAdapterNode);
 	while (pAdapterNode && QDF_IS_STATUS_SUCCESS(status)) {
 		pAdapter = pAdapterNode->pAdapter;
+
+		if (pAdapter->sessionId >= MAX_NUMBER_OF_ADAPTERS)
+			continue;
 
 		sme_ps_timer_flush_sync(pHddCtx->hHal, pAdapter->sessionId);
 
