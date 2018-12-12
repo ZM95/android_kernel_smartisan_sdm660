@@ -613,8 +613,8 @@ typedef struct {
  */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
-    A_UINT32 tried_mpdu_cnt_hist[1]; /* HTT_TX_PDEV_TRIED_MPDU_CNT_HIST */
     A_UINT32 hist_bin_size;
+    A_UINT32 tried_mpdu_cnt_hist[1]; /* HTT_TX_PDEV_TRIED_MPDU_CNT_HIST */
 } htt_tx_pdev_stats_tried_mpdu_cnt_hist_tlv_v;
 
 /* STATS_TYPE: HTT_DBG_EXT_STATS_PDEV_TX
@@ -1007,6 +1007,13 @@ typedef struct {
     /* Total ppdu transmitted bytes for peer: includes MAC header overhead */
     A_UINT32 ppdu_transmitted_bytes_low;
     A_UINT32 ppdu_transmitted_bytes_high;
+    A_UINT32 peer_ttl_removed_count;
+    /* inactive_time
+     * Running duration of the time since last tx/rx activity by this peer,
+     * units = seconds.
+     * If the peer is currently active, this inactive_time will be 0x0.
+     */
+    A_UINT32 inactive_time;
 } htt_peer_stats_cmn_tlv;
 
 typedef struct {
@@ -1384,9 +1391,9 @@ typedef struct {
  * */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
+    A_UINT32 hist_bin_size;
     /* Histogram of number of mpdus on tried mpdu */
     A_UINT32 tried_mpdu_cnt_hist[1]; /* HTT_TX_HWQ_TRIED_MPDU_CNT_HIST */
-    A_UINT32 hist_bin_size;
 } htt_tx_hwq_tried_mpdu_cnt_hist_tlv_v;
 
 #define HTT_TX_HWQ_TXOP_USED_CNT_HIST_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
