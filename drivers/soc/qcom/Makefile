@@ -116,3 +116,4 @@ obj-$(CONFIG_STATE_NOTIFIER) += state_notifier.o
 subdir-ccflags-y += \
 	-Wno-ignored-attributes \
 	-Wno-gcc-compat
+obj-$(CONFIG_MFSE_QMI) += mfse_qmi_v01.o mfse_qmi.o
